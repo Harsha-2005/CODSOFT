@@ -1,0 +1,119 @@
+import pandas as pd
+import re
+import string
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report
+import tensorflow as tf
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, LSTM, Dense, SpatialDropout1D
+from google.colab import files
+
+# Upload file interactively
+
+uploaded = files.upload()
+file = list(uploaded.keys())[0]  # Get the uploaded file name
+
+data = pd.read_csv(file, encoding='latin-1')
+
+data = data[['v1', 'v2']]  # Selecting only relevant columns
+data.columns = ["label", "message"]
+
+data['label'] = data['label'].map({'ham': 0, 'spam': 1})  # Convert labels to binary
+
+# Text Preprocessing
+
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(f"[{string.punctuation}]", "", text)  # Remove punctuation
+    text = re.sub(r'\d+', '', text)  # Remove numbers
+    return text
+
+data['message'] = data['message'].apply(preprocess_text)
+
+# Train-Test Split
+
+X_train, X_test, y_train, y_test = train_test_split(data['message'], data['label'], test_size=0.2, random_state=42)
+
+# TF-IDF Feature Extraction
+
+tfidf_vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+X_train_tfidf = tfidf_vectorizer.fit_transform(X_train)
+X_test_tfidf = tfidf_vectorizer.transform(X_test)
+
+# Train Traditional Classifiers
+
+models = {
+    "Naïve Bayes": MultinomialNB(),
+    "Logistic Regression": LogisticRegression(),
+    "SVM": SVC(kernel='linear')
+}
+
+for name, model in models.items():
+    model.fit(X_train_tfidf, y_train)
+    y_pred = model.predict(X_test_tfidf)
+    print(f"{name} Accuracy: {accuracy_score(y_test, y_pred):.4f}")
+    print(classification_report(y_test, y_pred))
+
+# Word Embedding using Neural Network
+
+max_words = 5000
+max_len = 100
+tokenizer = Tokenizer(num_words=max_words)
+tokenizer.fit_on_texts(X_train)
+X_train_seq = tokenizer.texts_to_sequences(X_train)
+X_test_seq = tokenizer.texts_to_sequences(X_test)
+X_train_pad = pad_sequences(X_train_seq, maxlen=max_len)
+X_test_pad = pad_sequences(X_test_seq, maxlen=max_len)
+
+# Define LSTM Model
+
+embedding_dim = 64
+model = Sequential([
+    Embedding(max_words, embedding_dim, input_length=max_len),
+    SpatialDropout1D(0.2),
+    LSTM(100, dropout=0.2, recurrent_dropout=0.2),
+    Dense(1, activation='sigmoid')
+])
+
+model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+# Train the LSTM model
+
+model.fit(X_train_pad, y_train, epochs=5, batch_size=32, validation_data=(X_test_pad, y_test))
+
+# Evaluate Model
+
+lstm_pred = (model.predict(X_test_pad) > 0.5).astype("int32")
+print("LSTM Model Accuracy:", accuracy_score(y_test, lstm_pred))
+print(classification_report(y_test, lstm_pred))
+
+# Prediction Function
+
+def predict_message(message):
+    processed_msg = preprocess_text(message)  # Preprocess input
+    tfidf_msg = tfidf_vectorizer.transform([processed_msg])  # Convert to TF-IDF
+    lstm_msg_seq = tokenizer.texts_to_sequences([processed_msg])  # Tokenize
+    lstm_msg_pad = pad_sequences(lstm_msg_seq, maxlen=max_len)  # Pad sequences
+
+    # Predictions from different models
+    nb_pred = models["Naïve Bayes"].predict(tfidf_msg)[0]
+    lr_pred = models["Logistic Regression"].predict(tfidf_msg)[0]
+    svm_pred = models["SVM"].predict(tfidf_msg)[0]
+    lstm_pred = (model.predict(lstm_msg_pad) > 0.5).astype("int32")[0][0]
+
+    print("\nPredictions:")
+    print(f"Naïve Bayes Prediction: {'Spam' if nb_pred == 1 else 'Ham'}")
+    print(f"Logistic Regression Prediction: {'Spam' if lr_pred == 1 else 'Ham'}")
+    print(f"SVM Prediction: {'Spam' if svm_pred == 1 else 'Ham'}")
+    print(f"LSTM Prediction: {'Spam' if lstm_pred == 1 else 'Ham'}")
+
+# Example Usage
+
+msg = "Congratulations! You have won a free prize. Click here to claim."
+predict_message(msg)
