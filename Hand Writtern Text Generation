@@ -1,0 +1,111 @@
+import tensorflow as tf
+import numpy as np
+import re
+import string
+import PyPDF2
+from google.colab import files
+import os
+import time
+
+# Step 1: Upload and Extract text from the uploaded PDF
+uploaded = files.upload()
+pdf_path = list(uploaded.keys())[0]  # Get the uploaded file name
+
+pdf_reader = PyPDF2.PdfReader(pdf_path)
+text = "\n".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
+
+# Step 2: Clean the extracted text
+def clean_text(text):
+    text = text.lower()
+    text = re.sub(f"[{string.punctuation}]", "", text)  # Remove punctuation
+    text = re.sub(r'\d+', '', text)  # Remove numbers
+    text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
+    return text
+
+cleaned_text = clean_text(text)
+
+# Step 3: Prepare dataset for character-level RNN
+chars = sorted(set(cleaned_text))
+char2idx = {c: i for i, c in enumerate(chars)}
+idx2char = np.array(chars)
+text_as_int = np.array([char2idx[c] for c in cleaned_text])
+
+# Set hyperparameters
+seq_length = 100  # Sequence length for training
+batch_size = 64   # Number of sequences per batch
+buffer_size = 10000  # Buffer size for shuffling
+evocab_size = len(chars)  # Number of unique characters
+embedding_dim = 256  # Dimension of embedding layer
+rnn_units = 1024  # Number of RNN units
+epochs = 20  # Number of training epochs
+
+# Prepare training dataset
+dataset = tf.data.Dataset.from_tensor_slices(text_as_int)
+dataset = dataset.batch(seq_length + 1, drop_remainder=True)
+
+def split_input_target(chunk):
+    input_text = chunk[:-1]
+    target_text = chunk[1:]
+    return input_text, target_text
+
+dataset = dataset.map(split_input_target)
+dataset = dataset.shuffle(buffer_size).batch(batch_size, drop_remainder=True)
+
+# Define Character-Level RNN Model
+class HandwritingRNN(tf.keras.Model):
+    def __init__(self, vocab_size, embedding_dim, rnn_units, batch_size):
+        super().__init__()
+        self.batch_size = batch_size
+        self.rnn_units = rnn_units
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+        self.lstm = tf.keras.layers.LSTM(rnn_units, return_sequences=True, return_state=True)
+        self.dense = tf.keras.layers.Dense(vocab_size)
+
+    def call(self, inputs, states=None, return_state=False, training=False):
+        x = self.embedding(inputs, training=training)
+        if states is None:
+            states = [tf.zeros((tf.shape(inputs)[0], self.rnn_units)), tf.zeros((tf.shape(inputs)[0], self.rnn_units))]
+        x, state_h, state_c = self.lstm(x, initial_state=states, training=training)
+        x = self.dense(x, training=training)
+        if return_state:
+            return x, [state_h, state_c]
+        else:
+            return x
+
+# Instantiate Model
+model = HandwritingRNN(evocab_size, embedding_dim, rnn_units, batch_size)
+
+# Define loss function
+def loss(labels, logits):
+    return tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
+
+# Compile Model
+model.compile(optimizer='adam', loss=loss)
+
+# Train Model
+model.fit(dataset, epochs=epochs)
+
+# Generate Handwritten-Like Text
+def generate_text(model, start_string, num_generate=500):
+    start_string = start_string.lower()  # Convert input to lowercase
+    input_eval = [char2idx[s] for s in start_string if s in char2idx]  # Ignore unknown chars
+    if not input_eval:
+        print("Error: None of the characters in the input exist in the training data.")
+        return ""
+    input_eval = tf.expand_dims(input_eval, 0)
+    generated_text = []
+    temperature = 1.0
+    states = [tf.zeros((1, rnn_units)), tf.zeros((1, rnn_units))]
+    for _ in range(num_generate):
+        predictions, states = model(input_eval, states=states, return_state=True)
+        predictions = tf.squeeze(predictions, 0)
+        predictions = predictions / temperature
+        predicted_id = tf.random.categorical(predictions, num_samples=1)[-1, 0].numpy()
+        input_eval = tf.expand_dims([predicted_id], 0)
+        generated_text.append(idx2char[predicted_id])
+    return start_string + ''.join(generated_text)
+
+# Example Usage
+start_string = "handwriting ai: "  # Lowercase input
+print(generate_text(model, start_string))
+ 
