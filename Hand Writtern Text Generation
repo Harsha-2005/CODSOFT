@@ -51,24 +51,37 @@ def split_input_target(chunk):
 dataset = dataset.map(split_input_target)
 dataset = dataset.shuffle(buffer_size).batch(batch_size, drop_remainder=True)
 
-# Define Character-Level RNN Model
+# Define Character-Level BiLSTM Model with Dropout
 class HandwritingRNN(tf.keras.Model):
     def __init__(self, vocab_size, embedding_dim, rnn_units, batch_size):
         super().__init__()
         self.batch_size = batch_size
         self.rnn_units = rnn_units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
-        self.lstm = tf.keras.layers.LSTM(rnn_units, return_sequences=True, return_state=True)
+        self.bilstm = tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(rnn_units, return_sequences=True, return_state=True, dropout=0.3)
+        )
         self.dense = tf.keras.layers.Dense(vocab_size)
 
     def call(self, inputs, states=None, return_state=False, training=False):
         x = self.embedding(inputs, training=training)
+
         if states is None:
-            states = [tf.zeros((tf.shape(inputs)[0], self.rnn_units)), tf.zeros((tf.shape(inputs)[0], self.rnn_units))]
-        x, state_h, state_c = self.lstm(x, initial_state=states, training=training)
+            # Create initial states for BiLSTM
+            forward_h = tf.zeros((tf.shape(inputs)[0], self.rnn_units))
+            forward_c = tf.zeros((tf.shape(inputs)[0], self.rnn_units))
+            backward_h = tf.zeros((tf.shape(inputs)[0], self.rnn_units))
+            backward_c = tf.zeros((tf.shape(inputs)[0], self.rnn_units))
+            states = [forward_h, forward_c, backward_h, backward_c]
+
+        x, forward_h, forward_c, backward_h, backward_c = self.bilstm(
+            x, initial_state=states, training=training
+        )
+
         x = self.dense(x, training=training)
+
         if return_state:
-            return x, [state_h, state_c]
+            return x, [forward_h, forward_c, backward_h, backward_c]
         else:
             return x
 
@@ -95,7 +108,7 @@ def generate_text(model, start_string, num_generate=500):
     input_eval = tf.expand_dims(input_eval, 0)
     generated_text = []
     temperature = 1.0
-    states = [tf.zeros((1, rnn_units)), tf.zeros((1, rnn_units))]
+    states = [tf.zeros((1, rnn_units)), tf.zeros((1, rnn_units)), tf.zeros((1, rnn_units)), tf.zeros((1, rnn_units))]
     for _ in range(num_generate):
         predictions, states = model(input_eval, states=states, return_state=True)
         predictions = tf.squeeze(predictions, 0)
@@ -108,4 +121,3 @@ def generate_text(model, start_string, num_generate=500):
 # Example Usage
 start_string = "handwriting ai: "  # Lowercase input
 print(generate_text(model, start_string))
- 
